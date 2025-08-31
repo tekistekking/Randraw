@@ -1,8 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Brain } from "./brain";
 import { MOTIFS, makeRng, choosePalette, PlanResult } from "./motifs";
 import { SUBJECTS, LANDSCAPES, ABSTRACTS, ALL_GENERATORS, getGenerator } from "./registry";
-import { scoreCanvas } from "./scoring";
 
 // ---- Cycle timing (global) ----
 const DRAW_MS = 60_000;          // 60s live drawing
@@ -45,14 +43,13 @@ function cycleInfo(nowMs: number) {
 const seedForCycle = (i: number) =>
   (Math.imul((i ^ 0x9e37) >>> 0, 2654435761) ^ 0x85ebca6b) >>> 0;
 
-function chooseWithVariety(cycleIndex: number, lastGen: string | null, brain: Brain, recipeGen?: string): string {
+function chooseWithVariety(cycleIndex: number, lastGen: string | null, recipeGen?: string): string {
   if (recipeGen && recipeGen !== lastGen) return recipeGen;
   const catIndex = cycleIndex % 3;
   const cat = catIndex === 0 ? SUBJECTS : (catIndex === 1 ? LANDSCAPES : ABSTRACTS);
   const pool = (cat as readonly string[]).filter(g => g !== lastGen);
   if (pool.length) {
-    const bPick = brain.chooseArm();
-    if (pool.includes(bPick)) return bPick;
+    
     return pool[Math.floor(Math.random() * pool.length)];
   }
   const allPool = (ALL_GENERATORS as readonly string[]).filter(g => g !== lastGen);
@@ -75,7 +72,7 @@ export default function App() {
   const rafRef = useRef(0);
   const serverOffsetRef = useRef(0);
   const currentCycleIndexRef = useRef<number | null>(null);
-  const brainRef = useRef<Brain | null>(null);
+  
 
   // Retina canvas
   const resizeCanvas = () => {
@@ -166,22 +163,8 @@ export default function App() {
     const now = Date.now() + serverOffsetRef.current;
     const info = cycleInfo(now);
 
-    // New cycle? evaluate previous, update brain, then replan
+    // New cycle: replan for this cycle
     if (currentCycleIndexRef.current === null || currentCycleIndexRef.current !== info.cycleIndex) {
-      // evaluate previous only if we actually had a plan
-      if (currentCycleIndexRef.current !== null) {
-        const reward = scoreCanvas(canvas);
-        if (brainRef.current && currentMotif) {
-          brainRef.current.update(currentMotif, reward);
-          try {
-            await fetch("/api/feedback", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ i: currentCycleIndexRef.current, generator: currentMotif, reward }),
-            });
-          } catch {}
-        }
-      }
       currentCycleIndexRef.current = info.cycleIndex;
       await planAndCatchUp();
       rafRef.current = requestAnimationFrame(drawLoop);
@@ -227,7 +210,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    brainRef.current = new Brain(ALL_GENERATORS as unknown as string[]);
+    
     (async () => {
       serverOffsetRef.current = await getServerOffsetMs();
       resizeCanvas();
@@ -285,7 +268,7 @@ export default function App() {
           rel="noopener noreferrer"
           aria-label="Follow randraw on X"
           title="Follow randraw on X"
-          className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-black/50 backdrop-blur ring-1 ring-white/10 hover:bg-white/10 transition"
+          className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-black/50 backdrop-blur ring-1 ring-white/10"
         >
           <svg viewBox="0 0 24 24" className="w-5 h-5 text-white" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M4 4L20 20" />
