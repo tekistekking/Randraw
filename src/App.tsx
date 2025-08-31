@@ -131,20 +131,6 @@ export default function App() {
       const gen = getGenerator(motifName);
       planRef.current = gen(w, h, seed, palette);
     }
-    // removed old switches
-      planRef.current = planAbstract(w, h, seed, palette);
-    } else if (motifName === "mountains") {
-      planRef.current = mountains(w, h, seed, palette);
-    } else if (motifName === "city") {
-      planRef.current = city(w, h, seed, palette);
-    } else if (motifName === "waves") {
-      planRef.current = waves(w, h, seed, palette);
-    } else if (motifName === "meadow") {
-      planRef.current = meadow(w, h, seed, palette);
-    } else {
-      const motifFn = (MOTIFS as any)[motifName] as (w:number,h:number,rng:()=>number,pal:string[])=>PlanResult;
-      planRef.current = motifFn(w, h, rng, palette);
-    }
 
     // background
     paintBg(ctx, planRef.current!);
