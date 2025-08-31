@@ -155,7 +155,7 @@ export default function App() {
     if (!info.inDrawing) setCountdown(Math.ceil(info.cooldownLeft / 1000));
   };
 
-  const drawLoop = () => {
+  const drawLoop = async () => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
     const plan = planRef.current!;
@@ -182,7 +182,7 @@ export default function App() {
         }
       }
       currentCycleIndexRef.current = info.cycleIndex;
-      planAndCatchUp();
+      await planAndCatchUp();
       rafRef.current = requestAnimationFrame(drawLoop);
       return;
     }
@@ -230,7 +230,7 @@ export default function App() {
     (async () => {
       serverOffsetRef.current = await getServerOffsetMs();
       resizeCanvas();
-      planAndCatchUp();
+      await planAndCatchUp();
       rafRef.current = requestAnimationFrame(drawLoop);
     })();
 
