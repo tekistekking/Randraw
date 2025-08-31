@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Brain } from "./brain";
+import { planAbstract } from "./abstract";
+import { mountains, city, waves, meadow } from "./landscapes";
 import { MOTIFS, MotifFn, makeRng, choosePalette, PlanResult } from "./motifs";
 import { scoreCanvas } from "./scoring";
 
 // ---- Cycle timing (global) ----
 const DRAW_MS = 60_000;          // 60s live drawing
-const COOLDOWN_MS = 10_000;      // 10s download window
+const COOLDOWN_MS = 5_000;      // 10s download window
 const CYCLE_MS = DRAW_MS + COOLDOWN_MS;
 
 // Fixed UTC epoch for global sync (same time position everywhere)
@@ -83,7 +85,7 @@ export default function App() {
   };
 
   // (Re)plan motif and fast-forward drawing to the current moment
-  const planAndCatchUp = () => {
+  const planAndCatchUp = async () => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
     const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -91,17 +93,40 @@ export default function App() {
     const now = Date.now() + serverOffsetRef.current;
     const info = cycleInfo(now);
 
+    // Fetch global recipe for this cycle
+    let recipe: any = null; let globalCount = info.cycleIndex + 1;
+    try {
+      const r = await fetch(`/api/recipe?i=${info.cycleIndex}`, { cache: "no-store" });
+      const j = await r.json();
+      if (j?.ok && j.recipe) { recipe = j.recipe; globalCount = j.globalCount ?? globalCount; }
+    } catch {}
+
+
     // Decide motif via brain (self-improvement), but deterministically reseed strokes
     const brain = brainRef.current!;
     let motifName = brain.chooseArm();
-    // Keep the same motif for the entire cooldown+next draw
+    if (recipe?.generator) motifName = recipe.generator;
     setCurrentMotif(motifName);
 
-    const seed = seedForCycle(info.cycleIndex);
+    const seed = recipe?.seed ?? seedForCycle(info.cycleIndex);
     const rng = makeRng(seed);
     const palette = choosePalette(rng);
-    const motifFn = MOTIFS[motifName];
-    planRef.current = motifFn(w, h, rng, palette);
+
+    // route generator
+    if (motifName === "abstract-flow") {
+      planRef.current = planAbstract(w, h, seed, palette);
+    } else if (motifName === "mountains") {
+      planRef.current = mountains(w, h, seed, palette);
+    } else if (motifName === "city") {
+      planRef.current = city(w, h, seed, palette);
+    } else if (motifName === "waves") {
+      planRef.current = waves(w, h, seed, palette);
+    } else if (motifName === "meadow") {
+      planRef.current = meadow(w, h, seed, palette);
+    } else {
+      const motifFn = MOTIFS[motifName as keyof typeof MOTIFS];
+      planRef.current = motifFn(w, h, rng, palette);
+    }
 
     // background
     paintBg(ctx, planRef.current!);
@@ -137,6 +162,15 @@ export default function App() {
     const now = Date.now() + serverOffsetRef.current;
     const info = cycleInfo(now);
 
+    // Fetch global recipe for this cycle
+    let recipe: any = null; let globalCount = info.cycleIndex + 1;
+    try {
+      const r = await fetch(`/api/recipe?i=${info.cycleIndex}`, { cache: "no-store" });
+      const j = await r.json();
+      if (j?.ok && j.recipe) { recipe = j.recipe; globalCount = j.globalCount ?? globalCount; }
+    } catch {}
+
+
     // New cycle? evaluate previous, update brain, then replan
     if (currentCycleIndexRef.current === null || currentCycleIndexRef.current !== info.cycleIndex) {
       // evaluate previous only if we actually had a plan
@@ -144,6 +178,7 @@ export default function App() {
         const reward = scoreCanvas(canvas);
         if (brainRef.current && currentMotif) {
           brainRef.current.update(currentMotif, reward);
+          try { await fetch("/api/feedback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ i: currentCycleIndexRef.current, generator: currentMotif, reward }) }); } catch {}
         }
       }
       currentCycleIndexRef.current = info.cycleIndex;
@@ -238,7 +273,12 @@ export default function App() {
         {phase === "cooldown" && (
           <div className="mt-1 text-xs opacity-80">New picture in {countdown}s</div>
         )}
+      
+      {/* Painting counter (top-right) */}
+      <div className="absolute top-4 right-4 z-20 p-3 rounded-2xl bg-black/50 backdrop-blur text-sm leading-tight text-white/90">
+        <Counter />
       </div>
+</div>
 
       {/* Cooldown overlay */}
       {phase === "cooldown" && (
@@ -261,4 +301,27 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function useGlobalCounter(serverOffsetRef: React.MutableRefObject<number>) {
+  const [count, setCount] = React.useState<number>(0);
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      const now = Date.now() + serverOffsetRef.current;
+      const sinceEpoch = now - Date.parse(EPOCH_ISO);
+      const i = Math.floor(sinceEpoch / (60_000 + 5_000)); // CYCLE_MS
+      setCount(i + 1);
+      raf = requestAnimationFrame(loop);
+    };
+    loop();
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return count;
+}
+
+function Counter() {
+  // @ts-ignore accessing ref from outer scope via global (runtime file scope)
+  const count = useGlobalCounter(serverOffsetRef as any);
+  return <div className="font-semibold">Paintings: <span className="tabular-nums">{count}</span></div>;
 }

@@ -35,3 +35,9 @@ Vercel picks up the static build (`dist`) and deploys the function at `/api/time
 - After each cycle finishes, a **quality score** is computed from the final image (coverage, contrast, symmetry, edges).
 - A lightweight **UCB1 bandit** updates weights so higher-scoring motifs/parameters are chosen more often over time.
 - State persists in **localStorage** (`randraw_brain_v1`). Clear site data to reset learning.
+
+
+## Global sharing (optional KV backend)
+- The app calls **`/api/recipe`** to fetch a global recipe per cycle and **`/api/feedback`** to submit a score after each piece.
+- If you enable **Vercel KV** (Upstash Redis), set env vars **KV_REST_API_URL** and **KV_REST_API_TOKEN** in your Vercel project (Node Function usage).
+- Without KV, the recipe is **deterministic from the cycle index**, so every browser still draws the **same unique piece** each cycle; feedback is ignored server-side but learning still happens locally.
