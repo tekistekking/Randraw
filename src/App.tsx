@@ -3,7 +3,7 @@ import { MOTIFS, makeRng, choosePalette, PlanResult } from "./motifs";
 import { SUBJECTS, LANDSCAPES, ABSTRACTS, ALL_GENERATORS, getGenerator } from "./registry";
 
 // ---- Cycle timing (global) ----
-const DRAW_MS = 60_000;          // 60s live drawing
+const DRAW_MS = 40_000;          // 60s live drawing
 const COOLDOWN_MS = 5_000;       // 5s download window
 const CYCLE_MS = DRAW_MS + COOLDOWN_MS;
 
@@ -43,6 +43,32 @@ function cycleInfo(nowMs: number) {
 const seedForCycle = (i: number) =>
   (Math.imul((i ^ 0x9e37) >>> 0, 2654435761) ^ 0x85ebca6b) >>> 0;
 
+// Increase stroke density for more sophisticated look as cycles advance
+function densifyPlan(plan: PlanResult, factor: number): PlanResult {
+  if (!plan || !plan.segments || factor <= 1.01) return plan;
+  const segs = plan.segments;
+  const extra: typeof segs = [];
+  const copies = Math.min(2, Math.max(1, Math.floor(factor))); // at most double
+  const frac = Math.min(1, Math.max(0, factor - Math.floor(factor))); // fractional part
+  const jitter = 0.8 * (factor - 1);
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    // integer copies
+    for (let k = 0; k < copies - 1; k++) {
+      const jx = (Math.random() - 0.5) * jitter;
+      const jy = (Math.random() - 0.5) * jitter;
+      extra.push({ ...s, x1: s.x1 + jx, y1: s.y1 + jy, x2: s.x2 + jx, y2: s.y2 + jy, w: Math.max(0.6, s.w * 0.92), alpha: s.alpha * 0.55 });
+    }
+    // fractional probabilistic extra
+    if (Math.random() < frac) {
+      const jx = (Math.random() - 0.5) * jitter;
+      const jy = (Math.random() - 0.5) * jitter;
+      extra.push({ ...s, x1: s.x1 + jx, y1: s.y1 + jy, x2: s.x2 + jx, y2: s.y2 + jy, w: Math.max(0.6, s.w * 0.9), alpha: s.alpha * 0.5 });
+    }
+  }
+  return { ...plan, segments: segs.concat(extra) };
+}
+
 function chooseWithVariety(cycleIndex: number, lastGen: string | null, recipeGen?: string): string {
   if (recipeGen && recipeGen !== lastGen) return recipeGen;
   const catIndex = cycleIndex % 3;
@@ -60,7 +86,6 @@ function setLast(key: string, val: string) { try { localStorage.setItem(key, val
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const linkRef = useRef<HTMLAnchorElement | null>(null);
 
   const [phase, setPhase] = useState<"drawing" | "cooldown">("drawing");
   const [progress, setProgress] = useState(0);
@@ -194,17 +219,30 @@ export default function App() {
       segIndexRef.current = i;
       setProgress(info.progress);
     } else {
-      // Cooldown: static image, prep download
+      // Cooldown: ensure the artwork is fully completed
       setPhase("cooldown");
-      setCountdown(Math.ceil(info.cooldownLeft / 1000));
-      if (linkRef.current && !linkRef.current.href) {
-        canvas.toBlob((blob) => {
-          if (!blob) return;
-          const url = URL.createObjectURL(blob);
-          linkRef.current!.href = url;
-          linkRef.current!.download = `randraw-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
-        });
+      // COMPLETE REMAINING ON COOLDOWN
+      {
+        const total = plan.segments.length;
+        let i = segIndexRef.current;
+        while (i < total) {
+          const s = plan.segments[i++];
+          ctx.save();
+          ctx.globalAlpha = clamp(s.alpha, 0.02, 0.95);
+          ctx.lineWidth = s.w;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.strokeStyle = s.color;
+          ctx.beginPath();
+          ctx.moveTo(s.x1, s.y1);
+          ctx.lineTo(s.x2, s.y2);
+          ctx.stroke();
+          ctx.restore();
+        }
+        segIndexRef.current = total;
       }
+      setCountdown(Math.ceil(info.cooldownLeft / 1000));
+      
     }
 
     rafRef.current = requestAnimationFrame(drawLoop);
@@ -245,7 +283,7 @@ export default function App() {
           <div className="font-semibold tracking-wide text-xs text-neutral-200">randraw</div>
         </div>
         <div className="mt-1">
-          {phase === "drawing" ? "Live drawing" : "Download window"}
+          {phase === "drawing" ? "Live drawing" : "Screenshot window"}
           {currentMotif && <span className="ml-2 text-white/70">· motif: {currentMotif}</span>}
         </div>
         {phase === "drawing" && (
@@ -261,22 +299,21 @@ export default function App() {
         )}
       </div>
 
-      {/* Social: X/Twitter */}
+      {/* Social: twitter (text) */}
       <div className="absolute top-4 right-4 z-20">
         <a
           href="https://x.com/randrawsol"
           target="_blank"
           rel="noopener noreferrer"
-          aria-label="Follow randraw on X"
-          title="Follow randraw on X"
-          className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-black/50 backdrop-blur ring-1 ring-white/10"
+          aria-label="Follow randraw on Twitter"
+          title="Follow randraw on Twitter"
+          className="inline-flex items-center justify-center px-3 h-10 rounded-full bg-black/50 backdrop-blur ring-1 ring-white/10"
+          style={{ textDecoration: "none" }}
         >
-          <svg viewBox="0 0 24 24" className="w-5 h-5 text-white" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M4 4L20 20" />
-            <path d="M20 4L4 20" />
-          </svg>
+          twitter
         </a>
       </div>
+
 
       {/* Cooldown overlay */}
       {phase === "cooldown" && (
@@ -284,18 +321,15 @@ export default function App() {
           <div className="p-6 rounded-2xl bg-neutral-900/90 border border-white/10 shadow-xl text-center">
             <div className="flex flex-col items-center gap-2">
               <img src="/randraw.png" alt="randraw logo" className="w-8 h-8 rounded-full ring-1 ring-white/20" />
-              <div className="text-lg font-semibold">Download your artwork</div>
+              <div className="text-lg font-semibold">Screenshot window</div>
             </div>
-            <div className="text-sm opacity-80 mt-1">Starting a new drawing in {countdown}s…</div>
-            <a ref={linkRef} href="#" className="inline-block mt-4 px-5 py-2 rounded-xl bg-white text-black font-medium hover:opacity-90 transition-opacity">
-              Download PNG
-            </a>
+            <div className="text-sm opacity-80 mt-1">New drawing in {countdown}s</div>
           </div>
         </div>
       )}
 
       <div className="absolute bottom-4 right-4 z-20 text-xs text-white/60">
-        randraw · 60s draw · 5s save · synced globally
+        randraw · 40s draw · 5s cooldown · synced globally
       </div>
     </div>
   );
