@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Brain } from "./brain";
-import { planAbstract } from "./abstract";
-import { mountains, city, waves, meadow } from "./landscapes";
 import { MOTIFS, makeRng, choosePalette, PlanResult } from "./motifs";
+import { SUBJECTS, LANDSCAPES, ABSTRACTS, ALL_GENERATORS, getGenerator } from "./registry";
 import { scoreCanvas } from "./scoring";
 
 // ---- Cycle timing (global) ----
@@ -45,6 +44,22 @@ function cycleInfo(nowMs: number) {
 // seed usable across runs
 const seedForCycle = (i: number) =>
   (Math.imul((i ^ 0x9e37) >>> 0, 2654435761) ^ 0x85ebca6b) >>> 0;
+
+function chooseWithVariety(cycleIndex: number, lastGen: string | null, brain: Brain, recipeGen?: string): string {
+  if (recipeGen && recipeGen !== lastGen) return recipeGen;
+  const catIndex = cycleIndex % 3;
+  const cat = catIndex === 0 ? SUBJECTS : (catIndex === 1 ? LANDSCAPES : ABSTRACTS);
+  const pool = (cat as readonly string[]).filter(g => g !== lastGen);
+  if (pool.length) {
+    const bPick = brain.chooseArm();
+    if (pool.includes(bPick)) return bPick;
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+  const allPool = (ALL_GENERATORS as readonly string[]).filter(g => g !== lastGen);
+  return allPool[Math.floor(Math.random() * allPool.length)];
+}
+function getLast(key: string): string | null { try { return localStorage.getItem(key); } catch { return null; } }
+function setLast(key: string, val: string) { try { localStorage.setItem(key, val); } catch {} }
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -112,7 +127,11 @@ export default function App() {
     const palette = choosePalette(rng);
 
     // route generator
-    if (motifName === "abstract-flow") {
+    {
+      const gen = getGenerator(motifName);
+      planRef.current = gen(w, h, seed, palette);
+    }
+    // removed old switches
       planRef.current = planAbstract(w, h, seed, palette);
     } else if (motifName === "mountains") {
       planRef.current = mountains(w, h, seed, palette);
@@ -222,7 +241,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    brainRef.current = new Brain(Object.keys(MOTIFS));
+    brainRef.current = new Brain(ALL_GENERATORS as unknown as string[]);
     (async () => {
       serverOffsetRef.current = await getServerOffsetMs();
       resizeCanvas();
@@ -270,6 +289,23 @@ export default function App() {
         {phase === "cooldown" && (
           <div className="mt-1 text-xs opacity-80">New picture in {countdown}s</div>
         )}
+      </div>
+
+      {/* Social: X/Twitter */}
+      <div className="absolute top-4 right-4 z-20">
+        <a
+          href="https://x.com/randrawsol"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Follow randraw on X"
+          title="Follow randraw on X"
+          className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-black/50 backdrop-blur ring-1 ring-white/10 hover:bg-white/10 transition"
+        >
+          <svg viewBox="0 0 24 24" className="w-5 h-5 text-white" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M4 4L20 20" />
+            <path d="M20 4L4 20" />
+          </svg>
+        </a>
       </div>
 
       {/* Cooldown overlay */}

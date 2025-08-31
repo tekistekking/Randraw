@@ -8,9 +8,9 @@ function pick<T>(rng:()=>number, arr:T[]){ return arr[Math.floor(rng()*arr.lengt
 
 const EPOCH_ISO = "2024-01-01T00:00:00.000Z";
 
-const SUBJECTS = ["face","flower","tree","house","rocket","fish"] as const;
-const LANDSCAPES = ["mountains","city","waves","meadow"] as const;
-const ABSTRACTS = ["abstract-flow"] as const;
+const SUBJECTS = ["face","flower","tree","house","rocket","fish","person","person-field","person-dog","cat","dog","bird","butterfly","bicycle","car","airplane","sailboat","lighthouse","tree-grove"] as const;
+const LANDSCAPES = ["mountains","city","waves","meadow","desert-dunes","canyon","volcano","aurora","forest-path","beach-sunset","snowy-village","waterfall","mountain-cabin","night-city"] as const;
+const ABSTRACTS = ["abstract-flow","mondrian-grid","spiral","voronoi","maze","concentric","starscape"] as const;
 const CATEGORIES = [SUBJECTS, LANDSCAPES, ABSTRACTS] as const;
 type GeneratorKey = typeof SUBJECTS[number] | typeof LANDSCAPES[number] | typeof ABSTRACTS[number];
 
