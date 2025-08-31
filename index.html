@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Autonomous Generative Art — A New Image Every Minute</title>
+  <meta name="description" content="A self-running generative art website that draws a fresh, high‑resolution artwork every minute. Save images or skip the timer to generate instantly." />
+  <meta name="theme-color" content="#0b0e14" />
+  <style>
+    :root {
+      --bg: #0b0e14;
+      --ink: #e6edf3;
+      --muted: #9aa7b3;
+      --panel: rgba(14,17,23,.55);
+      --glass: rgba(255,255,255,.06);
+      --accent: #6aa6ff;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%; width: 100%;
+      background: var(--bg); color: var(--ink);
+      font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Inter, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    .wrap { position: fixed; inset: 0; overflow: hidden; }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+    /* UI overlay */
+    .overlay { position: absolute; inset: 0; pointer-events: none; }
+    header {
+      position: absolute; left: 16px; right: 16px; top: 16px; display: flex; align-items: center; gap: 10px;
+      pointer-events: auto; justify-content: space-between;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--panel); backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    .brand strong { letter-spacing: .3px; font-weight: 700; }
+    .meta { font-variant-numeric: tabular-nums; color: var(--muted); }
+
+    .controls { display: inline-flex; gap: 8px; }
+    .btn { pointer-events: auto; user-select: none; white-space: nowrap;
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 14px; border-radius: 12px; border: 1px solid var(--glass);
+      background: var(--panel); color: var(--ink); text-decoration: none; font-weight: 600;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+      transition: transform .08s ease, background .2s ease, border-color .2s ease, opacity .2s ease;
+    }
+    .btn:hover { transform: translateY(-1px); border-color: rgba(255,255,255,.15); }
+    .btn:active { transform: translateY(0); opacity: .85; }
+    .btn.secondary { color: var(--muted); font-weight: 600; }
+
+    footer {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: 16px; display: flex; gap: 10px; align-items: center; pointer-events: auto;
+      padding: 10px 14px; background: var(--panel); border-radius: 12px; border: 1px solid var(--glass);
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+
+    .badge { padding: 4px 8px; border-radius: 999px; background: var(--glass); border: 1px solid rgba(255,255,255,.09); color: var(--muted); font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-variant-numeric: tabular-nums; }
+
+    .notice {
+      position: absolute; right: 16px; bottom: 16px; padding: 8px 10px; color: var(--muted);
+      background: var(--panel); border: 1px solid var(--glass); border-radius: 10px; pointer-events: auto;
+    }
+    @media (max-width: 640px) {
+      header { flex-direction: column; align-items: stretch; gap: 8px; }
+      .controls { justify-content: space-between; }
+      footer { left: 16px; right: 16px; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="art"></canvas>
+    <div class="overlay">
+      <header>
+        <div class="brand">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.88L18.18 22 12 18.77 5.82 22 7 14.15l-5-4.88 6.91-1.01L12 2z" stroke="currentColor" stroke-width="1.2"/>
+          </svg>
+          <div>
+            <strong>Autonomous Generative Art</strong>
+            <div class="meta mono" id="meta"></div>
+          </div>
+        </div>
+        <div class="controls">
+          <a class="btn" id="btn-skip" href="#">Generate Now</a>
+          <a class="btn secondary" id="btn-save" download>Save PNG</a>
+        </div>
+      </header>
+
+      <footer>
+        <span class="badge">Next in <span class="mono" id="countdown">60s</span></span>
+        <span class="badge">Style: <span id="styleName">—</span></span>
+        <span class="badge">Seed: <span class="mono" id="seed">—</span></span>
+        <span class="badge">Size: <span class="mono" id="size">—</span></span>
+      </footer>
+
+      <div class="notice">Runs entirely in your browser. A fresh artwork is drawn every minute. ✨</div>
+    </div>
+  </div>
+
+  <script>
+  // ====== Utilities ======
+  const $ = sel => document.querySelector(sel);
+  const canvas = document.getElementById('art');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  let W = 0, H = 0, DPR = Math.max(1, Math.min(2, devicePixelRatio || 1));
+
+  function resize() {
+    const { innerWidth, innerHeight } = window;
+    W = Math.max(320, innerWidth); H = Math.max(320, innerHeight);
+    DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    $('#size').textContent = `${W}×${H}@${DPR}x`;
+  }
+  window.addEventListener('resize', () => { resize(); drawFresh(); });
+
+  const styles = [];
+  function registerStyle(name, fn) { styles.push({ name, fn }); }
+  function rand(min=0, max=1) { return Math.random() * (max - min) + min; }
+  function randi(min, max) { return Math.floor(rand(min, max)); }
+  function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
+  function hsl(h, s, l, a = 1) { h = (h % 360 + 360) % 360; return `hsla(${h}, ${s}%, ${l}%, ${a})`; }
+  function pick(arr) { return arr[randi(0, arr.length)]; }
+
+  function seededRandom(seed) {
+    // Mulberry32 PRNG
+    let t = seed >>> 0;
+    return function() {
+      t += 0x6D2B79F5;
+      let r = Math.imul(t ^ (t >>> 15), 1 | t);
+      r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function paletteRandomizer(rng) {
+    const base = randi(0, 360);
+    const sat = randi(50, 80);
+    const light = randi(45, 65);
+    const c1 = hsl(base, sat, light);
+    const c2 = hsl(base + randi(20, 60), sat + randi(-10, 10), light + randi(-10, 10));
+    const c3 = hsl(base + randi(160, 220), sat + randi(-5, 10), light + randi(-10, 10));
+    const c4 = hsl(base + randi(300, 340), sat + randi(-10, 5), light + randi(-15, 5));
+    const paper = hsl(base + 180, 18, 6); // deep background
+    return { paper, colors: [c1, c2, c3, c4] };
+  }
+
+  // Simple pseudo-noise field (fast, not true Perlin)
+  function fieldAngle(x, y, t, freqX, freqY) {
+    return Math.sin(x * freqX + t) + Math.cos(y * freqY - t * 1.13);
+  }
+
+  // ====== Styles ======
+  registerStyle('Flow Field', function drawFlowField(rng) {
+    const t = Date.now() * 0.00015;
+    const { paper, colors } = paletteRandomizer(rng);
+    ctx.fillStyle = paper; ctx.fillRect(0, 0, W, H);
+    const freqX = rng() * 0.006 + 0.002;
+    const freqY = rng() * 0.006 + 0.002;
+    const agents = Math.floor((W * H) / 1500);
+    const steps = 90;
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < agents; i++) {
+      let x = rng() * W, y = rng() * H;
+      const color = pick(colors);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = rand(0.4, 1.2);
+      ctx.beginPath(); ctx.moveTo(x, y);
+      for (let s = 0; s < steps; s++) {
+        const a = fieldAngle(x, y, t, freqX, freqY) * Math.PI; // [-π, π]
+        x += Math.cos(a) * 2.2; y += Math.sin(a) * 2.2;
+        if (x < -10 || y < -10 || x > W + 10 || y > H + 10) break;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  });
+
+  registerStyle('Mondrian Split', function drawMondrian(rng) {
+    const palettes = [
+      { paper: '#f6f7fb', colors: ['#d40920', '#1356a2', '#f2c12e', '#101010'] }, // classic primary
+      paletteRandomizer(rng)
+    ];
+    const { paper, colors } = pick(palettes);
+    ctx.fillStyle = paper; ctx.fillRect(0,0,W,H);
+    ctx.lineWidth = Math.max(2, Math.min(W, H) * 0.004);
+    ctx.strokeStyle = '#111';
+
+    const minSize = Math.max(40, Math.min(W, H) * 0.08);
+    function splitRect(x, y, w, h, depth=0) {
+      const shouldSplit = (w > minSize && h > minSize) && (rng() < 0.9 - depth * 0.1);
+      if (shouldSplit) {
+        if (w > h) {
+          const cut = randi(w*0.35, w*0.65);
+          splitRect(x, y, cut, h, depth+1);
+          splitRect(x+cut, y, w-cut, h, depth+1);
+        } else {
+          const cut = randi(h*0.35, h*0.65);
+          splitRect(x, y, w, cut, depth+1);
+          splitRect(x, y+cut, w, h-cut, depth+1);
+        }
+      } else {
+        // draw cell
+        ctx.fillStyle = rng() < 0.72 ? paper : pick(colors);
+        ctx.fillRect(x+1, y+1, w-2, h-2);
+        ctx.strokeRect(x+0.5, y+0.5, w-1, h-1);
+      }
+    }
+    splitRect(0, 0, W, H, 0);
+  });
+
+  registerStyle('Radial Burst', function drawRadial(rng) {
+    const { paper, colors } = paletteRandomizer(rng);
+    // radial background gradient
+    const cx = W/2, cy = H/2; const r = Math.hypot(W, H) * 0.55;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, hsl(randi(0,360), 12, 12));
+    g.addColorStop(1, paper);
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+    const spokes = Math.floor(160 + rng()*200);
+    ctx.globalAlpha = 0.8;
+    for (let i=0; i<spokes; i++) {
+      const ang = (i/spokes) * Math.PI*2 + rng()*0.01;
+      const len = r * (0.6 + rng()*0.4);
+      ctx.save();
+      ctx.translate(cx, cy); ctx.rotate(ang);
+      ctx.fillStyle = pick(colors);
+      const w = 2 + rng()*8;
+      ctx.fillRect(0, -w/2, len, w);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  });
+
+  registerStyle('Circle Drift', function drawCircles(rng) {
+    const { paper, colors } = paletteRandomizer(rng);
+    ctx.fillStyle = paper; ctx.fillRect(0,0,W,H);
+    const circles = [];
+    const max = 500, tries = 8000;
+    for (let t=0; t<tries && circles.length < max; t++) {
+      const r = rand(3, Math.min(W,H) * 0.06);
+      const cx = rand(r, W - r);
+      const cy = rand(r, H - r);
+      let ok = true;
+      for (let c of circles) { if ((c.x-cx)**2 + (c.y-cy)**2 < (c.r + r + 2)**2) { ok = false; break; } }
+      if (ok) circles.push({ x: cx, y: cy, r });
+    }
+    ctx.save();
+    ctx.globalAlpha = 0.95; ctx.globalCompositeOperation = 'lighter';
+    for (let c of circles) {
+      const col = pick(colors);
+      const grad = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.r);
+      grad.addColorStop(0, col);
+      grad.addColorStop(1, hsl(randi(0,360), 25, 12, 0.0));
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  });
+
+  // ====== Engine ======
+  let nextAt = 0; const PERIOD = 60_000; // 1 minute
+  let countdownTimer = null; let seed = 0;
+
+  function drawFresh(forceStyleIndex = null) {
+    seed = (Date.now() ^ randi(0, 2**31-1)) >>> 0;
+    const rng = seededRandom(seed);
+    const style = forceStyleIndex != null ? styles[forceStyleIndex] : pick(styles);
+    $('#styleName').textContent = style.name;
+    $('#seed').textContent = seed.toString(16).padStart(8, '0');
+
+    // hint meta line
+    const now = new Date();
+    $('#meta').textContent = `${now.toLocaleString()} — ${styles.length} styles`;
+
+    style.fn(rng);
+
+    // update save link
+    const dataURL = canvas.toDataURL('image/png', 1.0);
+    const fileName = `autogen-${style.name.replace(/\s+/g,'-').toLowerCase()}-${seed}.png`;
+    const save = document.getElementById('btn-save');
+    save.href = dataURL; save.download = fileName;
+
+    // schedule next run
+    const nowMs = Date.now();
+    nextAt = nowMs + PERIOD;
+  }
+
+  function startCountdown() {
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+      const remain = Math.max(0, nextAt - Date.now());
+      const s = Math.floor(remain / 1000);
+      $('#countdown').textContent = s + 's';
+      if (remain <= 0) {
+        drawFresh();
+      }
+    }, 250);
+  }
+
+  // Controls
+  $('#btn-skip').addEventListener('click', (e) => { e.preventDefault(); drawFresh(); });
+
+  // Init
+  resize();
+  drawFresh(randi(0, styles.length));
+  startCountdown();
+
+  // Optional: keep producing on visibility changes without drift
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      // redraw quickly after returning to tab so user sees fresh art
+      drawFresh();
+    }
+  });
+  </script>
+</body>
+</html>
