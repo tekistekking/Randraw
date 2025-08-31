@@ -28,3 +28,10 @@ npm run preview
 npx vercel --prod
 ```
 Vercel picks up the static build (`dist`) and deploys the function at `/api/time`.
+
+
+## Self‑improving drawings
+- The app chooses from several **motifs** (face, flower, tree, house, rocket, fish) and renders them with stroke-by-stroke brushes.
+- After each cycle finishes, a **quality score** is computed from the final image (coverage, contrast, symmetry, edges).
+- A lightweight **UCB1 bandit** updates weights so higher-scoring motifs/parameters are chosen more often over time.
+- State persists in **localStorage** (`randraw_brain_v1`). Clear site data to reset learning.
