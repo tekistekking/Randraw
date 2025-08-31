@@ -114,10 +114,11 @@ export default function App() {
       if (j?.ok && j.recipe) recipe = j.recipe as Recipe;
     } catch {}
 
-    // Decide motif via recipe (global) or local brain (fallback)
-    const brain = brainRef.current!;
-    let motifName = recipe?.generator || brain.chooseArm();
+    // Decide motif via recipe (global) or local rotation (no repeats)
+    const lastGen = getLast("randraw_last_gen");
+    let motifName = recipe?.generator ?? chooseWithVariety(info.cycleIndex, lastGen);
     setCurrentMotif(motifName);
+    setLast("randraw_last_gen", motifName);
 
     const seed = (recipe?.seed ?? seedForCycle(info.cycleIndex)) >>> 0;
     const rng = makeRng(seed);
