@@ -202,7 +202,7 @@ function treeGrove(w:number,h:number,seed:number,palette:string[]): PlanResult {
 // ---- Landscapes ----
 function desertDunes(w:number,h:number,seed:number,palette:string[]): PlanResult {
   const seg:Seg[]=[]; const sky=palette[0], sand=palette[3];
-  for(let y=int(h*0.5); y<h; y+=6){
+  for(let y=Math.floor(h*0.5); y<h; y+=6){
     const yy=y + Math.sin((y+seed)*0.02)*8;
     line(seg, 0, yy, w, yy, 3, 0.5, sand);
   }
@@ -253,7 +253,7 @@ function forestPath(w:number,h:number,seed:number,palette:string[]): PlanResult 
 function beachSunset(w:number,h:number,seed:number,palette:string[]): PlanResult {
   const seg:Seg[]=[]; const sky=palette[0], sea=palette[2], sun=palette[3];
   circle(seg, w*0.7, h*0.35, 40, 4, 0.9, sun);
-  for(let y=int(h*0.6); y<h; y+=6){
+  for(let y=Math.floor(h*0.6); y<h; y+=6){
     line(seg, 0, y, w, y, 3, 0.5, sea);
   }
   return { name:"beach-sunset", segments:seg, bg: sky, palette };
