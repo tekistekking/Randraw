@@ -53,6 +53,7 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [countdown, setCountdown] = useState(10);
   const [currentMotif, setCurrentMotif] = useState<string>("");
+  const [globalCount, setGlobalCount] = useState<number>(0);
 
   const planRef = useRef<PlanResult | null>(null);
   const segIndexRef = useRef(0);
@@ -100,6 +101,7 @@ export default function App() {
       const j = await r.json();
       if (j?.ok && j.recipe) { recipe = j.recipe; globalCount = j.globalCount ?? globalCount; }
     } catch {}
+    setGlobalCount(globalCount);
 
 
     // Decide motif via brain (self-improvement), but deterministically reseed strokes
@@ -169,6 +171,7 @@ export default function App() {
       const j = await r.json();
       if (j?.ok && j.recipe) { recipe = j.recipe; globalCount = j.globalCount ?? globalCount; }
     } catch {}
+    setGlobalCount(globalCount);
 
 
     // New cycle? evaluate previous, update brain, then replan
@@ -276,7 +279,7 @@ export default function App() {
       
       {/* Painting counter (top-right) */}
       <div className="absolute top-4 right-4 z-20 p-3 rounded-2xl bg-black/50 backdrop-blur text-sm leading-tight text-white/90">
-        <Counter />
+        <div className="font-semibold">Paintings: <span className="tabular-nums">{globalCount}</span></div>
       </div>
 </div>
 
@@ -303,25 +306,3 @@ export default function App() {
   );
 }
 
-function useGlobalCounter(serverOffsetRef: React.MutableRefObject<number>) {
-  const [count, setCount] = React.useState<number>(0);
-  useEffect(() => {
-    let raf = 0;
-    const loop = () => {
-      const now = Date.now() + serverOffsetRef.current;
-      const sinceEpoch = now - Date.parse(EPOCH_ISO);
-      const i = Math.floor(sinceEpoch / (60_000 + 5_000)); // CYCLE_MS
-      setCount(i + 1);
-      raf = requestAnimationFrame(loop);
-    };
-    loop();
-    return () => cancelAnimationFrame(raf);
-  }, []);
-  return count;
-}
-
-function Counter() {
-  // @ts-ignore accessing ref from outer scope via global (runtime file scope)
-  const count = useGlobalCounter(serverOffsetRef as any);
-  return <div className="font-semibold">Paintings: <span className="tabular-nums">{count}</span></div>;
-}
