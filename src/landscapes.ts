@@ -1,101 +1,53 @@
-// src/landscapes.ts
-import type { Seg } from "./motifs";
 
-function clamp(v:number,a:number,b:number){ return Math.max(a, Math.min(b, v)); }
-function lcg(seed:number){ let s=seed>>>0; return ()=> (s=(s*1664525+1013904223)>>>0)/4294967296; }
-function pick<T>(rng:()=>number, arr:T[]){ return arr[Math.floor(rng()*arr.length)]; }
+import type { PlanResult, Seg } from "./motifs";
+import { line, ellipse } from "./motifs";
 
-export function mountains(width:number,height:number,seed:number,palette:string[]){
-  const rng=lcg(seed), seg:Seg[]=[];
-  const sky=palette[0], ridge=palette[1], snow="#f4f4f8";
-  // sky fill via horizontal strokes
-  for(let y=0;y<height*0.6;y+=3){
-    seg.push({x1:0,y1:y,x2:width,y2:y,w:2,alpha:0.15,color:sky});
-  }
-  // layered ridges
-  for(let l=0;l<4;l++){
-    let prevX=0, prevY=height*0.6 + l*height*0.08;
-    for(let x=0;x<=width;x+=8){
-      const y=height*0.5 + l*height*0.08 + Math.sin(x*0.01+seed*0.3+l)*height*0.05;
-      seg.push({x1:prevX,y1:prevY,x2:x,y2:y,w:2.5-l*0.4,alpha:0.6,color:ridge});
-      prevX=x; prevY=y;
-    }
-    // snow caps
-    for(let x=0;x<width;x+=40){
-      const y=height*0.5 + l*height*0.08 + Math.sin(x*0.01+seed*0.3+l)*height*0.05 - 14;
-      seg.push({x1:x-6,y1:y,x2:x+6,y2:y,w:3,alpha:0.8,color:snow});
-    }
-  }
-  // ground hatch
-  for(let y=height*0.6;y<height;y+=5){
-    seg.push({x1:0,y1:y,x2:width,y2:y,w:2,alpha:0.2,color:palette[2]});
+export function mountains(w:number,h:number,seed:number,palette:string[]): PlanResult {
+  const seg:Seg[]=[]; const sky=palette[0], rock=palette[1];
+  const base=h*0.8;
+  for(let i=0;i<3;i++){
+    const x1=w*(0.2+i*0.25), x2=x1+ w*0.25*0.8;
+    const peakY = base - (120 + i*30);
+    line(seg, x1, base, (x1+x2)/2, peakY, 5, 0.9, rock);
+    line(seg, (x1+x2)/2, peakY, x2, base, 5, 0.9, rock);
   }
   return { name:"mountains", segments:seg, bg: sky, palette };
 }
 
-export function city(width:number,height:number,seed:number,palette:string[]){
-  const rng=lcg(seed), seg:Seg[]=[];
-  const bg=palette[0], line=palette[1], win=palette[3];
-  // sky
-  for(let y=0;y<height*0.55;y+=3) seg.push({x1:0,y1:y,x2:width,y2:y,w:2,alpha:0.12,color:bg});
-  // skyline boxes
-  const ground=height*0.75;
-  for(let i=0;i<18;i++){
-    const x= (i/18)*width + (i%2?4:-4);
-    const w= 20 + (i%5)*10;
-    const h= 60 + ((i*seed)%7)*12;
-    // rect outline
-    seg.push({x1:x,y1:ground-h,x2:x+w,y2:ground-h,w:3,alpha:0.7,color:line});
-    seg.push({x1:x+w,y1:ground-h,x2:x+w,y2:ground,w:3,alpha:0.7,color:line});
-    seg.push({x1:x+w,y1:ground,x2:x,y2:ground,w:3,alpha:0.7,color:line});
-    seg.push({x1:x,y1:ground,x2:x,y2:ground-h,w:3,alpha:0.7,color:line});
-    // windows hatch
-    for(let yy=ground-h+8; yy<ground-6; yy+=12){
-      for(let xx=x+6; xx<x+w-6; xx+=10){
-        seg.push({x1:xx,y1:yy,x2:xx+4,y2:yy,w:2,alpha:0.8,color:win});
+export function city(w:number,h:number,seed:number,palette:string[]): PlanResult {
+  const seg:Seg[]=[]; const sky=palette[0], lineC=palette[1], win=palette[4];
+  const ground=h*0.8;
+  for(let i=0;i<14;i++){
+    const x=(i/14)*w; const bw=24+((i*7)%5)*8; const bh=40+((i*5)%7)*12;
+    line(seg, x, ground-bh, x+bw, ground-bh, 3, 0.9, lineC);
+    line(seg, x, ground-bh, x, ground, 3, 0.9, lineC);
+    line(seg, x+bw, ground-bh, x+bw, ground, 3, 0.9, lineC);
+    for(let yy=ground-bh+8; yy<ground; yy+=12){
+      for(let xx=x+6; xx<x+bw-6; xx+=10){
+        line(seg, xx, yy, xx+3, yy, 2, 0.9, win);
       }
     }
   }
-  // road
-  seg.push({x1:0,y1:ground+10,x2:width,y2:ground+10,w:6,alpha:0.8,color:palette[2]});
-  return { name:"city", segments:seg, bg: bg, palette };
+  return { name:"city", segments:seg, bg: sky, palette };
 }
 
-export function waves(width:number,height:number,seed:number,palette:string[]){
-  const seg:Seg[]=[]; const sky=palette[0], sea=palette[2], foam="#f4f4f8";
-  // sky
-  for(let y=0;y<height*0.45;y+=3) seg.push({x1:0,y1:y,x2:width,y2:y,w:2,alpha:0.15,color:sky});
-  // waves
-  const mid=height*0.6;
-  for(let y=mid; y<height; y+=8){
-    for(let x=0;x<width;x+=8){
-      const yy=y + Math.sin((x+y)*0.03 + seed*0.2)*4;
-      seg.push({x1:x,y1:yy,x2:x+8,y2:yy,w:2.2,alpha:0.5,color:sea});
-    }
-  }
-  // foam crests
-  for(let x=0;x<width;x+=12){
-    const yy=mid + Math.sin(x*0.05 + seed)*6;
-    seg.push({x1:x-4,y1:yy,x2:x+4,y2:yy,w:2.8,alpha:0.85,color:foam});
+export function waves(w:number,h:number,seed:number,palette:string[]): PlanResult {
+  const seg:Seg[]=[]; const sky=palette[0], sea=palette[2];
+  for(let y=h*0.6; y<h; y+=6){
+    line(seg, 0, y, w, y, 3, 0.4, sea);
   }
   return { name:"waves", segments:seg, bg: sky, palette };
 }
 
-export function meadow(width:number,height:number,seed:number,palette:string[]){
-  const seg:Seg[]=[]; const sky=palette[0], grass=palette[2], petal=palette[4];
-  // sky
-  for(let y=0;y<height*0.5;y+=3) seg.push({x1:0,y1:y,x2:width,y2:y,w:2,alpha:0.15,color:sky});
-  // grass blades
-  for(let x=0;x<width;x+=6){
-    const base=height*0.95, top=base- (20 + (Math.sin(x*0.07+seed)*10));
-    seg.push({x1:x,y1:base,x2:x,y2:top,w:2,alpha:0.6,color:grass});
+export function meadow(w:number,h:number,seed:number,palette:string[]): PlanResult {
+  const seg:Seg[]=[]; const sky=palette[0], grass=palette[2], flower=palette[3];
+  for(let x=0; x<w; x+=8){
+    line(seg, x, h*0.95, x, h*0.85, 2, 0.5, grass);
   }
-  // flowers
-  for(let i=0;i<40;i++){
-    const x=(i/40)*width + ((i%2?1:-1)*5);
-    const y=height*0.85 + Math.sin(i*0.3+seed)*6;
-    seg.push({x1:x-4,y1:y,x2:x+4,y2:y,w:2.5,alpha:0.85,color:petal});
-    seg.push({x1:x,y1:y-4,x2:x,y2:y+4,w:2.5,alpha:0.85,color:petal});
+  for(let i=0;i<30;i++){
+    const x=(i/30)*w, y=h*0.9;
+    line(seg, x-3,y, x+3,y, 2.4, 0.9, flower);
+    line(seg, x,y-3, x,y+3, 2.4, 0.9, flower);
   }
   return { name:"meadow", segments:seg, bg: sky, palette };
 }

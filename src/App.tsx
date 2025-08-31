@@ -1,22 +1,227 @@
+
 import React, { useEffect, useRef, useState } from "react";
-import { MOTIFS, makeRng, choosePalette, PlanResult } from "./motifs";
+import type { PlanResult } from "./motifs";
+import { choosePalette, makeRng } from "./motifs";
 import { SUBJECTS, LANDSCAPES, ABSTRACTS, ALL_GENERATORS, getGenerator } from "./registry";
 
-// ---- Cycle timing (global) ----
-const DRAW_MS = 40_000;          // 60s live drawing
-const COOLDOWN_MS = 0;       // 5s download window
-const CYCLE_MS = DRAW_MS + COOLDOWN_MS;
-
-// Fixed UTC epoch for global sync (same time position everywhere)
+const DRAW_MS = 40_000;
+const COOLDOWN_MS = 0;
 const EPOCH_ISO = "2024-01-01T00:00:00.000Z";
 const EPOCH_MS = Date.parse(EPOCH_ISO);
 
-// Utils
-const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+const clamp = (v:number,a:number,b:number)=> Math.max(a, Math.min(b, v));
+type Recipe = { i:number; seed:number; generator:string; palette:number; level?:number };
 
-type Recipe = { i:number; seed:number; generator:string; palette:number };
+// ---- Performance helpers ----
+function estimateThroughput(): number {
+  try {
+    const c = document.createElement('canvas');
+    c.width = 300; c.height = 150;
+    const ctx = c.getContext('2d')!;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = 2; ctx.strokeStyle = '#000'; ctx.globalAlpha = 0.5;
+    const N = 800, t0 = performance.now();
+    for (let i = 0; i < N; i++) { ctx.beginPath(); const x = (i % 40) * 6 + 2, y = (i / 40 | 0) * 3 + 1; ctx.moveTo(x,y); ctx.lineTo(x+3,y+1); ctx.stroke(); }
+    return N / Math.max(1, performance.now() - t0);
+  } catch { return 10; }
+}
+function thinPlan(plan: PlanResult, maxSegments: number): PlanResult {
+  const segs = plan.segments;
+  if (segs.length <= maxSegments) return plan;
+  const keep: typeof segs = [];
+  const ratio = segs.length / maxSegments;
+  for (let i = 0; i < segs.length; i++) {
+    if (i < maxSegments * 0.6) keep.push(segs[i]);
+    else if (Math.random() < 1 / ratio) keep.push(segs[i]);
+    if (keep.length >= maxSegments) break;
+  }
+  return { ...plan, segments: keep };
+}
 
-// ---- Server time sync ----
+// ---- Densifier (deterministic) ----
+function densifyPlan(plan: PlanResult, factor: number, rngSeed?: number): PlanResult {
+  if (!plan || !plan.segments || factor <= 1.01) return plan;
+  const segs = plan.segments;
+  let s = ((rngSeed ?? 1) >>> 0) || 1;
+  const rng = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+
+  const extra: typeof segs = [];
+  const copies = Math.min(2, Math.max(1, Math.floor(factor)));
+  const frac = Math.min(1, Math.max(0, factor - Math.floor(factor)));
+  const jitter = 0.8 * (factor - 1);
+
+  for (let i = 0; i < segs.length; i++) {
+    const base = segs[i];
+    for (let k = 0; k < copies - 1; k++) {
+      const jx = (rng() - 0.5) * jitter, jy = (rng() - 0.5) * jitter;
+      extra.push({ ...base, x1: base.x1 + jx, y1: base.y1 + jy, x2: base.x2 + jx, y2: base.y2 + jy, w: Math.max(0.6, base.w * 0.92), alpha: base.alpha * 0.55 });
+    }
+    if (rng() < frac) {
+      const jx = (rng() - 0.5) * jitter, jy = (rng() - 0.5) * jitter;
+      extra.push({ ...base, x1: base.x1 + jx, y1: base.y1 + jy, x2: base.x2 + jx, y2: base.y2 + jy, w: Math.max(0.6, base.w * 0.9), alpha: base.alpha * 0.5 });
+    }
+  }
+  return { ...plan, segments: segs.concat(extra) };
+}
+
+// ---- Painterly engine (composite) ----
+type BrushKit = {
+  detail: number;
+  useDry: boolean;
+  useWash: boolean;
+  useSplatter: boolean;
+  useHatch: boolean;
+  hatchAngleDeg: number;
+};
+function seededRng(seed:number){ let s=seed>>>0; return ()=> (s=(s*1664525+1013904223)>>>0)/4294967296; }
+function brushKitFor(level:number, motif:string): BrushKit {
+  const L = Math.max(0, level|0);
+  const detail = Math.min(3, 1 + L * 0.18);
+  const useDry = L >= 1;
+  const useWash = L >= 2;
+  const useHatch = L >= 2 && (motif.includes("mountain") || motif.includes("city") || motif.includes("meadow") || motif.includes("tree") || motif.includes("person"));
+  const useSplatter = L >= 3 && (motif.includes("lighthouse") || motif.includes("waves") || motif.includes("abstract") || motif.includes("volcano"));
+  const hatchAngleDeg = 30 + (L % 3) * 15;
+  return { detail, useDry, useWash, useSplatter, useHatch, hatchAngleDeg };
+}
+function paintDabsRound(ctx:CanvasRenderingContext2D, s:any, rng:()=>number, detail:number) {
+  const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const spacing = Math.max(3, 8 - Math.min(4.5, (detail - 1) * 3.0));
+  let steps = Math.min(24, Math.max(2, Math.floor(len / spacing)));
+  const ux = dx / len, uy = dy / len;
+  const baseAlpha = clamp(s.alpha, 0.06, 0.9);
+  const col = s.color as string;
+  if ((ctx as any).fillStyle !== col) (ctx as any).fillStyle = col;
+  if ((ctx as any).globalAlpha !== baseAlpha) (ctx as any).globalAlpha = baseAlpha;
+  for (let i=0;i<steps;i++) {
+    const t = steps>1 ? i/(steps-1) : 0;
+    const press = 0.6 + 0.8 * Math.sin(Math.PI * t);
+    const jitterMag = (detail - 1) * 0.8 + 0.4;
+    const jx = (rng() - 0.5) * jitterMag;
+    const jy = (rng() - 0.5) * jitterMag;
+    const px = s.x1 + ux * len * t + jx;
+    const py = s.y1 + uy * len * t + jy;
+    const r = Math.max(0.6, (s.w * 0.5) * press);
+    ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2); ctx.fill();
+  }
+}
+function paintDabsDry(ctx:CanvasRenderingContext2D, s:any, rng:()=>number, detail:number) {
+  const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const spacing = Math.max(4, 11 - Math.min(5, (detail - 1) * 3.0));
+  let steps = Math.min(18, Math.max(2, Math.floor(len / spacing)));
+  const ux = dx / len, uy = dy / len;
+  const baseAlpha = clamp(s.alpha * 0.85, 0.05, 0.8);
+  const col = s.color as string;
+  if ((ctx as any).fillStyle !== col) (ctx as any).fillStyle = col;
+  if ((ctx as any).globalAlpha !== baseAlpha) (ctx as any).globalAlpha = baseAlpha;
+  for (let i=0;i<steps;i++) {
+    const t = steps>1 ? i/(steps-1) : 0;
+    const press = 0.5 + 0.7 * Math.sin(Math.PI * t);
+    const jitterMag = (detail - 1) * 1.2 + 0.6;
+    const px = s.x1 + ux * len * t + (rng()-0.5)*jitterMag;
+    const py = s.y1 + uy * len * t + (rng()-0.5)*jitterMag;
+    const rx = Math.max(0.6, (s.w * 0.7) * press);
+    const ry = Math.max(0.5, (s.w * 0.35) * press);
+    const ang = (rng() - 0.5) * Math.PI;
+    ctx.save(); ctx.translate(px, py); ctx.rotate(ang);
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+function paintWash(ctx:CanvasRenderingContext2D, s:any, rng:()=>number, detail:number) {
+  const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const step = Math.max(20, 60 - (detail-1)*10);
+  const n = Math.min(6, Math.max(1, Math.floor(len / step)));
+  const ux = dx/len, uy=dy/len;
+  const alpha = clamp(s.alpha * 0.25, 0.03, 0.25);
+  if ((ctx as any).globalAlpha !== alpha) (ctx as any).globalAlpha = alpha;
+  if ((ctx as any).fillStyle !== s.color) (ctx as any).fillStyle = s.color;
+  for (let i=0;i<n;i++){
+    const t = (i+0.3)/(n+0.6);
+    const px = s.x1 + ux*len*t + (rng()-0.5)*3;
+    const py = s.y1 + uy*len*t + (rng()-0.5)*3;
+    const r = Math.max(4, s.w*1.2 + rng()*6);
+    ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2); ctx.fill();
+  }
+}
+function paintSplatter(ctx:CanvasRenderingContext2D, s:any, rng:()=>number, detail:number) {
+  const count = Math.min(12, 4 + Math.floor(detail*2));
+  const alpha = clamp(s.alpha * 0.35, 0.04, 0.35);
+  if ((ctx as any).globalAlpha !== alpha) (ctx as any).globalAlpha = alpha;
+  if ((ctx as any).fillStyle !== s.color) (ctx as any).fillStyle = s.color;
+  const ex = s.x2, ey = s.y2;
+  for (let i=0;i<count;i++){
+    const ang = rng()*Math.PI*2;
+    const r = 2 + rng()*6;
+    const d = 2 + rng()*14;
+    const x = ex + Math.cos(ang)*d;
+    const y = ey + Math.sin(ang)*d;
+    ctx.beginPath(); ctx.arc(x,y,r*0.35,0,Math.PI*2); ctx.fill();
+  }
+}
+function paintHatch(ctx:CanvasRenderingContext2D, s:any, rng:()=>number, detail:number, angleDeg:number) {
+  const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const spacing = Math.max(10, 18 - detail*2);
+  const n = Math.min(10, Math.max(2, Math.floor(len / spacing)));
+  const rad = angleDeg * Math.PI/180;
+  const hx = Math.cos(rad), hy = Math.sin(rad);
+  const alpha = clamp(s.alpha * 0.45, 0.05, 0.6);
+  if ((ctx as any).globalAlpha !== alpha) (ctx as any).globalAlpha = alpha;
+  if ((ctx as any).strokeStyle !== s.color) (ctx as any).strokeStyle = s.color;
+  if ((ctx as any).lineWidth !== Math.max(0.8, s.w*0.5)) (ctx as any).lineWidth = Math.max(0.8, s.w*0.5);
+  for (let i=0;i<n;i++) {
+    const t = (i+0.3)/(n+0.6);
+    const cx = s.x1 + dx*t + (rng()-0.5)*2;
+    const cy = s.y1 + dy*t + (rng()-0.5)*2;
+    const L = 6 + detail*2;
+    ctx.beginPath();
+    ctx.moveTo(cx - hx*L, cy - hy*L);
+    ctx.lineTo(cx + hx*L, cy + hy*L);
+    ctx.stroke();
+  }
+}
+function paintSegmentComposite(ctx:CanvasRenderingContext2D, s:any, kit:BrushKit, rngSeed:number) {
+  const rng = seededRng(rngSeed);
+  paintDabsRound(ctx, s, rng, kit.detail);
+  if (kit.useDry)      paintDabsDry(ctx, s, rng, kit.detail);
+  if (kit.useWash)     paintWash(ctx, s, rng, kit.detail);
+  if (kit.useSplatter) paintSplatter(ctx, s, rng, kit.detail);
+  if (kit.useHatch)    paintHatch(ctx, s, rng, kit.detail, kit.hatchAngleDeg);
+}
+function estimateOpsPerSeg(kit:BrushKit) {
+  let ops = 6;
+  ops += 10 * kit.detail;
+  if (kit.useDry) ops += 8 * kit.detail;
+  if (kit.useWash) ops += 6;
+  if (kit.useSplatter) ops += 10;
+  if (kit.useHatch) ops += 8;
+  return ops;
+}
+
+// ---- Variety & sync helpers ----
+function cycleInfo(nowMs: number) {
+  const sinceEpoch = nowMs - EPOCH_MS;
+  const cycleIndex = Math.floor(sinceEpoch / (DRAW_MS + COOLDOWN_MS));
+  const into = sinceEpoch - cycleIndex * (DRAW_MS + COOLDOWN_MS);
+  const inDrawing = into < DRAW_MS;
+  const p = inDrawing ? clamp(into / DRAW_MS, 0, 1) : 1;
+  return { cycleIndex, inDrawing, progress: p };
+}
+const seedForCycle = (i: number) => (Math.imul((i ^ 0x9e37) >>> 0, 2654435761) ^ 0x85ebca6b) >>> 0;
+function getLast(key: string): string | null { try { return localStorage.getItem(key); } catch { return null; } }
+function setLast(key: string, val: string) { try { localStorage.setItem(key, val); } catch {} }
+function chooseWithVariety(cycleIndex: number, lastGen: string | null, recipeGen?: string): string {
+  if (recipeGen && recipeGen !== lastGen) return recipeGen;
+  const catIndex = cycleIndex % 3;
+  const cat = catIndex === 0 ? SUBJECTS : (catIndex === 1 ? LANDSCAPES : ABSTRACTS);
+  const pool = (cat as readonly string[]).filter(g => g !== lastGen);
+  if (pool.length) return pool[Math.floor(Math.random() * pool.length)];
+  const allPool = (ALL_GENERATORS as readonly string[]).filter(g => g !== lastGen);
+  return allPool[Math.floor(Math.random() * allPool.length)];
+}
 async function getServerOffsetMs(): Promise<number> {
   try {
     const t0 = Date.now();
@@ -25,131 +230,23 @@ async function getServerOffsetMs(): Promise<number> {
     const t1 = Date.now();
     const rtt2 = Math.floor((t1 - t0) / 2);
     return (serverNow + rtt2) - t1;
-  } catch {
-    return 0;
-  }
-}
-function cycleInfo(nowMs: number) {
-  const sinceEpoch = nowMs - EPOCH_MS;
-  const cycleIndex = Math.floor(sinceEpoch / CYCLE_MS);
-  const into = sinceEpoch - cycleIndex * CYCLE_MS;
-  const inDrawing = into < DRAW_MS;
-  const p = inDrawing ? clamp(into / DRAW_MS, 0, 1) : 1;
-  const cooldownLeft = inDrawing ? 0 : Math.max(0, CYCLE_MS - into);
-  return { cycleIndex, inDrawing, progress: p, cooldownLeft };
-}
-
-// seed usable across runs
-const seedForCycle = (i: number) =>
-  (Math.imul((i ^ 0x9e37) >>> 0, 2654435761) ^ 0x85ebca6b) >>> 0;
-
-// Increase stroke density for more sophisticated look as cycles advance
-function densifyPlan(plan: PlanResult, factor: number): PlanResult {
-  if (!plan || !plan.segments || factor <= 1.01) return plan;
-  const segs = plan.segments;
-  const extra: typeof segs = [];
-  const copies = Math.min(2, Math.max(1, Math.floor(factor))); // at most double
-  const frac = Math.min(1, Math.max(0, factor - Math.floor(factor))); // fractional part
-  const jitter = 0.8 * (factor - 1);
-  for (let i = 0; i < segs.length; i++) {
-    const s = segs[i];
-    // integer copies
-    for (let k = 0; k < copies - 1; k++) {
-      const jx = (Math.random() - 0.5) * jitter;
-      const jy = (Math.random() - 0.5) * jitter;
-      extra.push({ ...s, x1: s.x1 + jx, y1: s.y1 + jy, x2: s.x2 + jx, y2: s.y2 + jy, w: Math.max(0.6, s.w * 0.92), alpha: s.alpha * 0.55 });
-    }
-    // fractional probabilistic extra
-    if (Math.random() < frac) {
-      const jx = (Math.random() - 0.5) * jitter;
-      const jy = (Math.random() - 0.5) * jitter;
-      extra.push({ ...s, x1: s.x1 + jx, y1: s.y1 + jy, x2: s.x2 + jx, y2: s.y2 + jy, w: Math.max(0.6, s.w * 0.9), alpha: s.alpha * 0.5 });
-    }
-  }
-  return { ...plan, segments: segs.concat(extra) };
-}
-
-function chooseWithVariety(cycleIndex: number, lastGen: string | null, recipeGen?: string): string {
-  if (recipeGen && recipeGen !== lastGen) return recipeGen;
-  const catIndex = cycleIndex % 3;
-  const cat = catIndex === 0 ? SUBJECTS : (catIndex === 1 ? LANDSCAPES : ABSTRACTS);
-  const pool = (cat as readonly string[]).filter(g => g !== lastGen);
-  if (pool.length) {
-    
-    return pool[Math.floor(Math.random() * pool.length)];
-  }
-  const allPool = (ALL_GENERATORS as readonly string[]).filter(g => g !== lastGen);
-  return allPool[Math.floor(Math.random() * allPool.length)];
-}
-function getLast(key: string): string | null { try { return localStorage.getItem(key); } catch { return null; } }
-function setLast(key: string, val: string) { try { localStorage.setItem(key, val); } catch {} }
-
-
-// --- Performance helpers ---
-function estimateThroughput(): number {
-  // quick micro-benchmark on offscreen canvas: strokes/ms
-  try {
-    const c = document.createElement('canvas');
-    c.width = 300; c.height = 150;
-    const ctx = c.getContext('2d')!;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = 2; ctx.strokeStyle = '#000'; ctx.globalAlpha = 0.5;
-    const N = 1200;
-    const t0 = performance.now();
-    for (let i = 0; i < N; i++) {
-      ctx.beginPath();
-      const x1 = (i % 60) * 5 + 2, y1 = Math.floor(i / 60) * 2 + 1;
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x1 + 3, y1 + 1);
-      ctx.stroke();
-    }
-    const t1 = performance.now();
-    const ms = Math.max(1, t1 - t0);
-    return N / ms; // strokes per ms
-  } catch {
-    return 10; // reasonable conservative default
-  }
-}
-
-function thinPlan(plan: PlanResult, maxSegments: number): PlanResult {
-  const segs = plan.segments;
-  if (segs.length <= maxSegments) return plan;
-  const keep = new Array< typeof segs[number] >();
-  const ratio = segs.length / maxSegments;
-  for (let i = 0; i < segs.length; i++) {
-    if (i < maxSegments * 0.6) {
-      // keep first 60% densely to preserve main structure
-      keep.push(segs[i]);
-    } else {
-      // probabilistic keep for the rest
-      if (Math.random() < 1 / ratio) keep.push(segs[i]);
-    }
-    if (keep.length >= maxSegments) break;
-  }
-  return { ...plan, segments: keep };
-}
-
-function applyPerformanceBudget(plan: PlanResult, targetMs: number): PlanResult {
-  const thr = estimateThroughput();               // strokes/ms
-  const budget = Math.floor(thr * targetMs * 0.9); // 90% safety margin
-  return thinPlan(plan, Math.max(500, budget));    // never drop below 500 strokes
+  } catch { return 0; }
 }
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const throughputRef = useRef<number>(0);
+  const serverOffsetRef = useRef(0);
+  const rafRef = useRef(0);
+  const currentCycleIndexRef = useRef<number | null>(null);
+  const planRef = useRef<PlanResult | null>(null);
+  const planMetaRef = useRef<{complexity:number, brushKit:any}>({complexity:1, brushKit:null});
+  const segIndexRef = useRef(0);
 
   const [phase, setPhase] = useState<"drawing" | "cooldown">("drawing");
   const [progress, setProgress] = useState(0);
-  const [countdown, setCountdown] = useState(5);
   const [currentMotif, setCurrentMotif] = useState<string>("");
 
-  const planRef = useRef<PlanResult | null>(null);
-  const segIndexRef = useRef(0);
-  const rafRef = useRef(0);
-  const serverOffsetRef = useRef(0);
-  const currentCycleIndexRef = useRef<number | null>(null);
-  
-
-  // Retina canvas
   const resizeCanvas = () => {
     const canvas = canvasRef.current!;
     const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
@@ -161,37 +258,31 @@ export default function App() {
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   };
-
   const paintBg = (ctx: CanvasRenderingContext2D, plan: PlanResult) => {
     const w = ctx.canvas.clientWidth, h = ctx.canvas.clientHeight;
-    ctx.save();
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = plan.bg;
-    ctx.globalAlpha = 1.0;
-    ctx.fillRect(0, 0, w, h);
-    ctx.restore();
+    (ctx as any).globalAlpha = 1.0;
+    (ctx as any).fillStyle = plan.bg;
+    (ctx as any).fillRect(0, 0, w, h);
   };
 
-  // (Re)plan motif and fast-forward drawing to the current moment
   const planAndCatchUp = async () => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
     const w = canvas.clientWidth, h = canvas.clientHeight;
-
     const now = Date.now() + serverOffsetRef.current;
     const info = cycleInfo(now);
 
-    // Fetch global recipe for this cycle
+    // fetch recipe
     let recipe: Recipe | null = null;
     try {
       const r = await fetch(`/api/recipe?i=${info.cycleIndex}`, { cache: "no-store" });
-      const j = await r.json();
-      if (j?.ok && j.recipe) recipe = j.recipe as Recipe;
+      let j: any = null; try { j = await r.json(); } catch {}
+      if (j && j.ok && j.recipe) recipe = j.recipe as Recipe;
     } catch {}
 
-    // Decide motif via recipe (global) or local rotation (no repeats)
     const lastGen = getLast("randraw_last_gen");
-    let motifName = recipe?.generator ?? chooseWithVariety(info.cycleIndex, lastGen);
+    let motifName = chooseWithVariety(info.cycleIndex, lastGen, recipe?.generator);
     setCurrentMotif(motifName);
     setLast("randraw_last_gen", motifName);
 
@@ -199,66 +290,67 @@ export default function App() {
     const rng = makeRng(seed);
     const palette = choosePalette(rng);
 
-    // route generator
+    const gen = getGenerator(motifName);
+    planRef.current = gen(w, h, seed, palette);
+
+    // sophistication & densify
+    const level = (recipe && recipe.level != null) ? recipe.level! : Math.floor(info.cycleIndex / 12);
+    const complexityFactor = Math.min(2.0, 1 + level * 0.12);
+    planRef.current = densifyPlan(planRef.current, complexityFactor, seed ^ 0xabc0ffee);
+
+    // painterly kit
+    const kit = brushKitFor(level, motifName);
+    planMetaRef.current.complexity = complexityFactor;
+    planMetaRef.current.brushKit = kit;
+
+    // performance budget with kit
+    if (!throughputRef.current) throughputRef.current = estimateThroughput();
     {
-      const gen = getGenerator(motifName);
-      planRef.current = gen(w, h, seed, palette);
+      const ops = ((): number => {
+        let o = 6 + 10*kit.detail;
+        if (kit.useDry) o += 8*kit.detail;
+        if (kit.useWash) o += 6;
+        if (kit.useSplatter) o += 10;
+        if (kit.useHatch) o += 8;
+        return o;
+      })();
+      const thr = throughputRef.current;
+      const segBudget = Math.min(7000, Math.max(300, Math.floor((thr * DRAW_MS * 0.85) / Math.max(8, ops))));
+      planRef.current = thinPlan(planRef.current, segBudget);
     }
 
     // background
     paintBg(ctx, planRef.current!);
 
-    // Fast-forward strokes
+    // fast-forward
     const total = planRef.current!.segments.length;
     const target = Math.floor(total * info.progress);
     let i = 0;
     while (i < target) {
       const s = planRef.current!.segments[i++];
-      ctx.save();
-      ctx.globalAlpha = clamp(s.alpha, 0.02, 0.95);
-      ctx.lineWidth = s.w;
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.strokeStyle = s.color;
-      ctx.beginPath();
-      ctx.moveTo(s.x1, s.y1);
-      ctx.lineTo(s.x2, s.y2);
-      ctx.stroke();
-      ctx.restore();
+      paintSegmentComposite(ctx, s, kit, (seed ^ i * 1013904223) >>> 0);
     }
     segIndexRef.current = target;
     setPhase(info.inDrawing ? "drawing" : "cooldown");
     setProgress(info.progress);
-    if (!info.inDrawing) setCountdown(Math.ceil(info.cooldownLeft / 1000));
   };
 
   const drawLoop = async () => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
-    const plan = planRef.current!;
     const now = Date.now() + serverOffsetRef.current;
     const info = cycleInfo(now);
 
-    // New cycle: replan for this cycle
     if (currentCycleIndexRef.current === null || currentCycleIndexRef.current !== info.cycleIndex) {
-      // Finish any remaining strokes of the previous plan before switching
+      // finish remaining strokes
       if (currentCycleIndexRef.current !== null && planRef.current) {
-        const prevPlan = planRef.current;
+        const prevPlan = planRef.current; let j = segIndexRef.current;
         const totalPrev = prevPlan.segments.length;
-        let j = segIndexRef.current;
+        const kit = planMetaRef.current.brushKit || brushKitFor(0, "abstract");
+        const seed = seedForCycle(currentCycleIndexRef.current);
         while (j < totalPrev) {
           const s = prevPlan.segments[j++];
-          ctx.save();
-          ctx.globalAlpha = clamp(s.alpha, 0.02, 0.95);
-          ctx.lineWidth = s.w;
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          ctx.strokeStyle = s.color;
-          ctx.beginPath();
-          ctx.moveTo(s.x1, s.y1);
-          ctx.lineTo(s.x2, s.y2);
-          ctx.stroke();
-          ctx.restore();
+          paintSegmentComposite(ctx, s, kit, (seed ^ j * 1013904223) >>> 0);
         }
         segIndexRef.current = totalPrev;
       }
@@ -268,126 +360,68 @@ export default function App() {
       return;
     }
 
-    if (info.inDrawing) {
+    if (info.inDrawing && planRef.current) {
       setPhase("drawing");
-      const total = plan.segments.length;
+      const total = planRef.current.segments.length;
       const target = Math.floor(total * info.progress);
       let i = segIndexRef.current;
+      const kit = planMetaRef.current.brushKit || brushKitFor(0, "abstract");
+      const seed = seedForCycle(info.cycleIndex);
       while (i < target) {
-        const s = plan.segments[i++];
-        ctx.save();
-        ctx.globalAlpha = clamp(s.alpha, 0.02, 0.95);
-        ctx.lineWidth = s.w;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.strokeStyle = s.color;
-        ctx.beginPath();
-        ctx.moveTo(s.x1, s.y1);
-        ctx.lineTo(s.x2, s.y2);
-        ctx.stroke();
-        ctx.restore();
+        const s = planRef.current.segments[i++];
+        paintSegmentComposite(ctx, s, kit, (seed ^ i * 1013904223) >>> 0);
       }
       segIndexRef.current = i;
       setProgress(info.progress);
-    } else {
-      // Cooldown: ensure the artwork is fully completed
-      setPhase("cooldown");
-      // COMPLETE REMAINING ON COOLDOWN
-      {
-        const total = plan.segments.length;
-        let i = segIndexRef.current;
-        while (i < total) {
-          const s = plan.segments[i++];
-          ctx.save();
-          ctx.globalAlpha = clamp(s.alpha, 0.02, 0.95);
-          ctx.lineWidth = s.w;
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          ctx.strokeStyle = s.color;
-          ctx.beginPath();
-          ctx.moveTo(s.x1, s.y1);
-          ctx.lineTo(s.x2, s.y2);
-          ctx.stroke();
-          ctx.restore();
-        }
-        segIndexRef.current = total;
-      }
-      setCountdown(Math.ceil(info.cooldownLeft / 1000));
-      
     }
 
     rafRef.current = requestAnimationFrame(drawLoop);
   };
 
   useEffect(() => {
-    
     (async () => {
       serverOffsetRef.current = await getServerOffsetMs();
       resizeCanvas();
       await planAndCatchUp();
       rafRef.current = requestAnimationFrame(drawLoop);
     })();
-
-    const onResize = () => {
-      resizeCanvas();
-      // No restart — recompute & fast-forward to current time
-      planAndCatchUp();
-    };
+    const onResize = () => { resizeCanvas(); planAndCatchUp(); };
     window.addEventListener("resize", onResize);
-    return () => {
-      window.removeEventListener("resize", onResize);
-      cancelAnimationFrame(rafRef.current);
-    };
+    return () => { window.removeEventListener("resize", onResize); cancelAnimationFrame(rafRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const progressPct = Math.floor(progress * 100);
 
   return (
-    <div className="relative w-screen h-screen bg-neutral-950 text-neutral-100 overflow-hidden select-none">
+    <div className="relative w-screen h-screen overflow-hidden select-none" style={{ background:"#0a0a0a", color:"#eaeaea" }}>
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
-      {/* HUD with brand logo + motif + learning */}
-      <div className="absolute top-4 left-4 z-20 p-3 rounded-2xl bg-black/50 backdrop-blur text-sm leading-tight">
-        <div className="flex items-center gap-2">
-          <img src="/randraw.png" alt="randraw logo" className="w-6 h-6 rounded-full ring-1 ring-white/20" />
-          <div className="font-semibold tracking-wide text-xs text-neutral-200">randraw</div>
+      {/* HUD left */}
+      <div className="absolute top-4 left-4 z-20" style={{ padding:"12px", borderRadius:"16px", background:"rgba(0,0,0,0.4)", backdropFilter:"blur(6px)", fontSize:"12px", lineHeight:1.2 }}>
+        <div className="flex items-center" style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+          <img src="/randraw.png" alt="randraw logo" style={{ width:24, height:24, borderRadius:999, outline:"1px solid rgba(255,255,255,0.2)" }} />
+          <div style={{ fontWeight:600, letterSpacing:"0.02em", color:"#ddd" }}>randraw</div>
         </div>
-        <div className="mt-1">
-          "Live drawing"
-          {currentMotif && <span className="ml-2 text-white/70">· motif: {currentMotif}</span>}
+        <div style={{ marginTop:6 }}>
+          {"Live drawing"}
+          {currentMotif && <span style={{ marginLeft:8, opacity:0.7 }}>· motif: {currentMotif}</span>}
         </div>
-        {phase === "drawing" && (
-          <>
-            <div className="mt-2 w-64 h-2 bg-white/10 rounded-full overflow-hidden">
-              <div className="h-full bg-white/70" style={{ width: `${progressPct}%` }} />
-            </div>
-            <div className="mt-1 text-xs opacity-80">{progressPct}%</div>
-          </>
-        )}
-        
+        <div style={{ marginTop:8, width:256, height:8, background:"rgba(255,255,255,0.12)", borderRadius:999 }}>
+          <div style={{ width:`${progressPct}%`, height:"100%", background:"#fff", borderRadius:999 }} />
+        </div>
+        <div style={{ marginTop:4, fontSize:11, opacity:0.8 }}>{progressPct}%</div>
       </div>
 
-      {/* Social: twitter (text) */}
+      {/* Social top-right (text) */}
       <div className="absolute top-4 right-4 z-20">
-        <a
-          href="https://x.com/randrawsol"
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="Follow randraw on Twitter"
-          title="Follow randraw on Twitter"
-          className="inline-flex items-center justify-center px-3 h-10 rounded-full bg-black/50 backdrop-blur ring-1 ring-white/10"
-          style={{ textDecoration: "none" }}
-        >
-          twitter
-        </a>
+        <a href="https://x.com/randrawsol" target="_blank" rel="noopener noreferrer"
+           aria-label="Follow randraw on Twitter" title="Follow randraw on Twitter"
+           style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", padding:"0 12px", height:40, borderRadius:999, background:"rgba(0,0,0,0.4)", backdropFilter:"blur(6px)", outline:"1px solid rgba(255,255,255,0.12)", color:"#fff", textDecoration:"none" }}>twitter</a>
       </div>
 
-
-      {/* Cooldown overlay */}
-      
-
-      <div className="absolute bottom-4 right-4 z-20 text-xs text-white/60">
+      {/* Footer */}
+      <div className="absolute bottom-4 right-4 z-20" style={{ fontSize:12, color:"rgba(255,255,255,0.6)" }}>
         randraw · 40s draw · synced globally
       </div>
     </div>
