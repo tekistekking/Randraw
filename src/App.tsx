@@ -2,12 +2,12 @@ import React, { useEffect, useRef, useState } from "react";
 import { Brain } from "./brain";
 import { planAbstract } from "./abstract";
 import { mountains, city, waves, meadow } from "./landscapes";
-import { MOTIFS, MotifFn, makeRng, choosePalette, PlanResult } from "./motifs";
+import { MOTIFS, makeRng, choosePalette, PlanResult } from "./motifs";
 import { scoreCanvas } from "./scoring";
 
 // ---- Cycle timing (global) ----
 const DRAW_MS = 60_000;          // 60s live drawing
-const COOLDOWN_MS = 5_000;      // 10s download window
+const COOLDOWN_MS = 5_000;       // 5s download window
 const CYCLE_MS = DRAW_MS + COOLDOWN_MS;
 
 // Fixed UTC epoch for global sync (same time position everywhere)
@@ -16,7 +16,8 @@ const EPOCH_MS = Date.parse(EPOCH_ISO);
 
 // Utils
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
-const armNames = Object.keys(MOTIFS);
+
+type Recipe = { i:number; seed:number; generator:string; palette:number };
 
 // ---- Server time sync ----
 async function getServerOffsetMs(): Promise<number> {
@@ -51,7 +52,7 @@ export default function App() {
 
   const [phase, setPhase] = useState<"drawing" | "cooldown">("drawing");
   const [progress, setProgress] = useState(0);
-  const [countdown, setCountdown] = useState(10);
+  const [countdown, setCountdown] = useState(5);
   const [currentMotif, setCurrentMotif] = useState<string>("");
 
   const planRef = useRef<PlanResult | null>(null);
@@ -94,21 +95,19 @@ export default function App() {
     const info = cycleInfo(now);
 
     // Fetch global recipe for this cycle
-    let recipe: any = null; let globalCount = info.cycleIndex + 1;
+    let recipe: Recipe | null = null;
     try {
       const r = await fetch(`/api/recipe?i=${info.cycleIndex}`, { cache: "no-store" });
       const j = await r.json();
-      if (j?.ok && j.recipe) { recipe = j.recipe; globalCount = j.globalCount ?? globalCount; }
+      if (j?.ok && j.recipe) recipe = j.recipe as Recipe;
     } catch {}
 
-
-    // Decide motif via brain (self-improvement), but deterministically reseed strokes
+    // Decide motif via recipe (global) or local brain (fallback)
     const brain = brainRef.current!;
-    let motifName = brain.chooseArm();
-    if (recipe?.generator) motifName = recipe.generator;
+    let motifName = recipe?.generator || brain.chooseArm();
     setCurrentMotif(motifName);
 
-    const seed = recipe?.seed ?? seedForCycle(info.cycleIndex);
+    const seed = (recipe?.seed ?? seedForCycle(info.cycleIndex)) >>> 0;
     const rng = makeRng(seed);
     const palette = choosePalette(rng);
 
@@ -124,7 +123,7 @@ export default function App() {
     } else if (motifName === "meadow") {
       planRef.current = meadow(w, h, seed, palette);
     } else {
-      const motifFn = MOTIFS[motifName as keyof typeof MOTIFS];
+      const motifFn = (MOTIFS as any)[motifName] as (w:number,h:number,rng:()=>number,pal:string[])=>PlanResult;
       planRef.current = motifFn(w, h, rng, palette);
     }
 
@@ -162,15 +161,6 @@ export default function App() {
     const now = Date.now() + serverOffsetRef.current;
     const info = cycleInfo(now);
 
-    // Fetch global recipe for this cycle
-    let recipe: any = null; let globalCount = info.cycleIndex + 1;
-    try {
-      const r = await fetch(`/api/recipe?i=${info.cycleIndex}`, { cache: "no-store" });
-      const j = await r.json();
-      if (j?.ok && j.recipe) { recipe = j.recipe; globalCount = j.globalCount ?? globalCount; }
-    } catch {}
-
-
     // New cycle? evaluate previous, update brain, then replan
     if (currentCycleIndexRef.current === null || currentCycleIndexRef.current !== info.cycleIndex) {
       // evaluate previous only if we actually had a plan
@@ -178,7 +168,13 @@ export default function App() {
         const reward = scoreCanvas(canvas);
         if (brainRef.current && currentMotif) {
           brainRef.current.update(currentMotif, reward);
-          try { await fetch("/api/feedback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ i: currentCycleIndexRef.current, generator: currentMotif, reward }) }); } catch {}
+          try {
+            await fetch("/api/feedback", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ i: currentCycleIndexRef.current, generator: currentMotif, reward }),
+            });
+          } catch {}
         }
       }
       currentCycleIndexRef.current = info.cycleIndex;
@@ -226,7 +222,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    brainRef.current = new Brain(armNames);
+    brainRef.current = new Brain(Object.keys(MOTIFS));
     (async () => {
       serverOffsetRef.current = await getServerOffsetMs();
       resizeCanvas();
@@ -236,6 +232,7 @@ export default function App() {
 
     const onResize = () => {
       resizeCanvas();
+      // No restart — recompute & fast-forward to current time
       planAndCatchUp();
     };
     window.addEventListener("resize", onResize);
@@ -252,7 +249,7 @@ export default function App() {
     <div className="relative w-screen h-screen bg-neutral-950 text-neutral-100 overflow-hidden select-none">
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
-      {/* HUD with brand logo + motif + learning stats */}
+      {/* HUD with brand logo + motif + learning */}
       <div className="absolute top-4 left-4 z-20 p-3 rounded-2xl bg-black/50 backdrop-blur text-sm leading-tight">
         <div className="flex items-center gap-2">
           <img src="/randraw.png" alt="randraw logo" className="w-6 h-6 rounded-full ring-1 ring-white/20" />
@@ -273,9 +270,7 @@ export default function App() {
         {phase === "cooldown" && (
           <div className="mt-1 text-xs opacity-80">New picture in {countdown}s</div>
         )}
-      
       </div>
-</div>
 
       {/* Cooldown overlay */}
       {phase === "cooldown" && (
@@ -294,9 +289,8 @@ export default function App() {
       )}
 
       <div className="absolute bottom-4 right-4 z-20 text-xs text-white/60">
-        randraw · learns every cycle · 60s draw · 10s save
+        randraw · 60s draw · 5s save · synced globally
       </div>
     </div>
   );
 }
-
