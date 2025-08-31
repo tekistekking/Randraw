@@ -4,7 +4,7 @@ import { SUBJECTS, LANDSCAPES, ABSTRACTS, ALL_GENERATORS, getGenerator } from ".
 
 // ---- Cycle timing (global) ----
 const DRAW_MS = 40_000;          // 60s live drawing
-const COOLDOWN_MS = 5_000;       // 5s download window
+const COOLDOWN_MS = 0;       // 5s download window
 const CYCLE_MS = DRAW_MS + COOLDOWN_MS;
 
 // Fixed UTC epoch for global sync (same time position everywhere)
@@ -83,6 +83,56 @@ function chooseWithVariety(cycleIndex: number, lastGen: string | null, recipeGen
 }
 function getLast(key: string): string | null { try { return localStorage.getItem(key); } catch { return null; } }
 function setLast(key: string, val: string) { try { localStorage.setItem(key, val); } catch {} }
+
+
+// --- Performance helpers ---
+function estimateThroughput(): number {
+  // quick micro-benchmark on offscreen canvas: strokes/ms
+  try {
+    const c = document.createElement('canvas');
+    c.width = 300; c.height = 150;
+    const ctx = c.getContext('2d')!;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = 2; ctx.strokeStyle = '#000'; ctx.globalAlpha = 0.5;
+    const N = 1200;
+    const t0 = performance.now();
+    for (let i = 0; i < N; i++) {
+      ctx.beginPath();
+      const x1 = (i % 60) * 5 + 2, y1 = Math.floor(i / 60) * 2 + 1;
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x1 + 3, y1 + 1);
+      ctx.stroke();
+    }
+    const t1 = performance.now();
+    const ms = Math.max(1, t1 - t0);
+    return N / ms; // strokes per ms
+  } catch {
+    return 10; // reasonable conservative default
+  }
+}
+
+function thinPlan(plan: PlanResult, maxSegments: number): PlanResult {
+  const segs = plan.segments;
+  if (segs.length <= maxSegments) return plan;
+  const keep = new Array< typeof segs[number] >();
+  const ratio = segs.length / maxSegments;
+  for (let i = 0; i < segs.length; i++) {
+    if (i < maxSegments * 0.6) {
+      // keep first 60% densely to preserve main structure
+      keep.push(segs[i]);
+    } else {
+      // probabilistic keep for the rest
+      if (Math.random() < 1 / ratio) keep.push(segs[i]);
+    }
+    if (keep.length >= maxSegments) break;
+  }
+  return { ...plan, segments: keep };
+}
+
+function applyPerformanceBudget(plan: PlanResult, targetMs: number): PlanResult {
+  const thr = estimateThroughput();               // strokes/ms
+  const budget = Math.floor(thr * targetMs * 0.9); // 90% safety margin
+  return thinPlan(plan, Math.max(500, budget));    // never drop below 500 strokes
+}
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -191,6 +241,27 @@ export default function App() {
 
     // New cycle: replan for this cycle
     if (currentCycleIndexRef.current === null || currentCycleIndexRef.current !== info.cycleIndex) {
+      // Finish any remaining strokes of the previous plan before switching
+      if (currentCycleIndexRef.current !== null && planRef.current) {
+        const prevPlan = planRef.current;
+        const totalPrev = prevPlan.segments.length;
+        let j = segIndexRef.current;
+        while (j < totalPrev) {
+          const s = prevPlan.segments[j++];
+          ctx.save();
+          ctx.globalAlpha = clamp(s.alpha, 0.02, 0.95);
+          ctx.lineWidth = s.w;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.strokeStyle = s.color;
+          ctx.beginPath();
+          ctx.moveTo(s.x1, s.y1);
+          ctx.lineTo(s.x2, s.y2);
+          ctx.stroke();
+          ctx.restore();
+        }
+        segIndexRef.current = totalPrev;
+      }
       currentCycleIndexRef.current = info.cycleIndex;
       await planAndCatchUp();
       rafRef.current = requestAnimationFrame(drawLoop);
@@ -283,7 +354,7 @@ export default function App() {
           <div className="font-semibold tracking-wide text-xs text-neutral-200">randraw</div>
         </div>
         <div className="mt-1">
-          {phase === "drawing" ? "Live drawing" : "Screenshot window"}
+          "Live drawing"
           {currentMotif && <span className="ml-2 text-white/70">· motif: {currentMotif}</span>}
         </div>
         {phase === "drawing" && (
@@ -294,9 +365,7 @@ export default function App() {
             <div className="mt-1 text-xs opacity-80">{progressPct}%</div>
           </>
         )}
-        {phase === "cooldown" && (
-          <div className="mt-1 text-xs opacity-80">New picture in {countdown}s</div>
-        )}
+        
       </div>
 
       {/* Social: twitter (text) */}
@@ -316,20 +385,10 @@ export default function App() {
 
 
       {/* Cooldown overlay */}
-      {phase === "cooldown" && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="p-6 rounded-2xl bg-neutral-900/90 border border-white/10 shadow-xl text-center">
-            <div className="flex flex-col items-center gap-2">
-              <img src="/randraw.png" alt="randraw logo" className="w-8 h-8 rounded-full ring-1 ring-white/20" />
-              <div className="text-lg font-semibold">Screenshot window</div>
-            </div>
-            <div className="text-sm opacity-80 mt-1">New drawing in {countdown}s</div>
-          </div>
-        </div>
-      )}
+      
 
       <div className="absolute bottom-4 right-4 z-20 text-xs text-white/60">
-        randraw · 40s draw · 5s cooldown · synced globally
+        randraw · 40s draw · synced globally
       </div>
     </div>
   );
