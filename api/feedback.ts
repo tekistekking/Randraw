@@ -1,10 +1,9 @@
 // api/feedback.ts
-import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { kvEnabled, kvGet, kvSet } from "./_kv";
 
 type Body = { i:number; generator:string; reward:number };
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ ok:false, error:"POST only" });
   const { i, generator, reward } = (req.body || {}) as Body;
   if (typeof i !== "number" || typeof generator !== "string" || typeof reward !== "number") {

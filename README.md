@@ -41,3 +41,9 @@ Vercel picks up the static build (`dist`) and deploys the function at `/api/time
 - The app calls **`/api/recipe`** to fetch a global recipe per cycle and **`/api/feedback`** to submit a score after each piece.
 - If you enable **Vercel KV** (Upstash Redis), set env vars **KV_REST_API_URL** and **KV_REST_API_TOKEN** in your Vercel project (Node Function usage).
 - Without KV, the recipe is **deterministic from the cycle index**, so every browser still draws the **same unique piece** each cycle; feedback is ignored server-side but learning still happens locally.
+
+
+## Distinct pieces + learning
+- The server **rotates categories** (subject → landscape → abstract) and avoids repeating the same generator back-to-back.
+- If **Vercel KV** is configured, global feedback biases selection toward higher-scoring generators while keeping some exploration.
+- Clients also learn locally with a UCB1 bandit using the heuristic score.
