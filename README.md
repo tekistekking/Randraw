@@ -1,50 +1,30 @@
-# Autonomous AI Painter
+# randraw (Autonomous AI Painter, globally synced)
 
 A fully autonomous, client‑side generative painter that:
 - **draws a brand‑new picture over exactly 60 seconds** (live brush strokes),
 - then opens a **10‑second download window**,
 - and repeats forever.
 
-Built with **Vite + React + TypeScript + Tailwind**. Zero servers/APIs required.
+Now with **global sync**:
+- All browsers use a fixed UTC epoch + a lightweight **/api/time** edge function.
+- Refreshing **does not restart** mid‑minute; the app **fast‑forwards** to the current moment.
+- If **/api/time** is unreachable (local dev), it falls back to local time and still works.
 
-## Local Dev
+## Dev
 ```bash
 npm i
 npm run dev
-# open the URL Vite prints (usually http://localhost:5173)
 ```
 
 ## Build
 ```bash
 npm run build
-npm run preview   # optional: serve /dist locally
+npm run preview
 ```
 
-## Deploy to Vercel
-Two easy options:
-
-### A) From this folder
-1. Install the Vercel CLI and login:
-   ```bash
-   npm i -g vercel
-   vercel login
-   ```
-2. Build and deploy:
-   ```bash
-   npm run build
-   vercel --prod
-   # Vercel will detect the static build at /dist via vercel.json
-   ```
-
-### B) Via GitHub
-1. Push this folder to a new GitHub repo.
-2. In the Vercel dashboard, **Import Project** from GitHub.
-3. Framework preset: **Vite** (or auto‑detected). Build command: `npm run build`. Output dir: `dist`.
-4. Click Deploy.
-
-## Notes
-- The app is full‑screen and responsive; on resize it restarts a fresh minute for crisp results.
-- Each cycle is seeded and deterministic per cycle; palettes and vector fields vary automatically.
-- Your PNG is generated client‑side — no uploads.
-
-Enjoy ✨
+## Deploy (Vercel)
+- Import this project or run:
+```bash
+npx vercel --prod
+```
+Vercel picks up the static build (`dist`) and deploys the function at `/api/time`.
