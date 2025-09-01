@@ -1,7 +1,7 @@
-
 export const config = { runtime: 'edge' };
-export default async function handler(req: Request) {
+
+export default async function handler() {
   return new Response(JSON.stringify({ serverNow: Date.now() }), {
-    headers: { 'content-type': 'application/json' }
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
 }
