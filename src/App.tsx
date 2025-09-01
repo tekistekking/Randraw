@@ -13,6 +13,8 @@ const clamp = (v:number,a:number,b:number)=> Math.max(a, Math.min(b, v));
 type Recipe = { i:number; seed:number; generator:string; palette:number; level?:number };
 
 // ---- Performance helpers ----
+async function safeJson(r: Response) { try { return await r.json(); } catch { return null; } }
+async function getJson(url: string) { try { const r = await fetch(url, { cache: "no-store" }); if (!r.ok) return null; return await safeJson(r); } catch { return null; } }
 function estimateThroughput(): number {
   try {
     const c = document.createElement('canvas');
@@ -64,6 +66,17 @@ function densifyPlan(plan: PlanResult, factor: number, rngSeed?: number): PlanRe
 }
 
 // ---- Painterly engine (composite) ----
+function fillEllipse(ctx: CanvasRenderingContext2D, x:number, y:number, rx:number, ry:number, rotation:number) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rotation || 0);
+  ctx.scale(Math.max(0.0001, rx), Math.max(0.0001, ry));
+  ctx.beginPath();
+  ctx.arc(0, 0, 1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 type BrushKit = {
   detail: number;
   useDry: boolean;
@@ -225,11 +238,11 @@ function chooseWithVariety(cycleIndex: number, lastGen: string | null, recipeGen
 async function getServerOffsetMs(): Promise<number> {
   try {
     const t0 = Date.now();
-    const res = await fetch("/api/time", { cache: "no-store" });
-    const { serverNow } = await res.json();
+    const j: any = await getJson("/api/time");
+    if (!j || typeof j.serverNow !== "number") return 0;
     const t1 = Date.now();
     const rtt2 = Math.floor((t1 - t0) / 2);
-    return (serverNow + rtt2) - t1;
+    return (j.serverNow + rtt2) - t1;
   } catch { return 0; }
 }
 
@@ -244,6 +257,7 @@ export default function App() {
   const segIndexRef = useRef(0);
 
   const [phase, setPhase] = useState<"drawing" | "cooldown">("drawing");
+  const [err, setErr] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [currentMotif, setCurrentMotif] = useState<string>("");
 
@@ -267,6 +281,7 @@ export default function App() {
   };
 
   const planAndCatchUp = async () => {
+    try {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
     const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -276,8 +291,7 @@ export default function App() {
     // fetch recipe
     let recipe: Recipe | null = null;
     try {
-      const r = await fetch(`/api/recipe?i=${info.cycleIndex}`, { cache: "no-store" });
-      let j: any = null; try { j = await r.json(); } catch {}
+      const j: any = await getJson(`/api/recipe?i=${info.cycleIndex}`);
       if (j && j.ok && j.recipe) recipe = j.recipe as Recipe;
     } catch {}
 
@@ -333,9 +347,18 @@ export default function App() {
     segIndexRef.current = target;
     setPhase(info.inDrawing ? "drawing" : "cooldown");
     setProgress(info.progress);
+    setErr(null);
+    } catch (e:any) {
+      console.error("planAndCatchUp failed", e);
+      setErr("Renderer error — using local fallback");
+      // minimal fallback: clear & keep going
+      const canvas = canvasRef.current!; const ctx = canvas.getContext("2d")!;
+      ctx.clearRect(0,0,canvas.clientWidth, canvas.clientHeight);
+    }
   };
 
   const drawLoop = async () => {
+    try {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
     const now = Date.now() + serverOffsetRef.current;
@@ -376,6 +399,7 @@ export default function App() {
     }
 
     rafRef.current = requestAnimationFrame(drawLoop);
+    } catch (e:any) { console.error("drawLoop error", e); setErr("Draw loop error — recovering..."); rafRef.current = requestAnimationFrame(drawLoop); }
   };
 
   useEffect(() => {
@@ -419,6 +443,13 @@ export default function App() {
            aria-label="Follow randraw on Twitter" title="Follow randraw on Twitter"
            style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", padding:"0 12px", height:40, borderRadius:999, background:"rgba(0,0,0,0.4)", backdropFilter:"blur(6px)", outline:"1px solid rgba(255,255,255,0.12)", color:"#fff", textDecoration:"none" }}>twitter</a>
       </div>
+
+      {/* Error overlay */}
+      {err && (
+        <div className="absolute top-1/2 left-1/2 z-30" style={{transform:"translate(-50%,-50%)", padding:"12px 16px", borderRadius:"12px", background:"rgba(255,60,60,0.12)", outline:"1px solid rgba(255,80,80,0.4)", color:"#fff", fontSize:13}}>
+          {err}
+        </div>
+      )}
 
       {/* Footer */}
       <div className="absolute bottom-4 right-4 z-20" style={{ fontSize:12, color:"rgba(255,255,255,0.6)" }}>
